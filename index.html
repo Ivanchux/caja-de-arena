@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Caja de Arena</title>
+<meta name="description" content="Simulador de partículas en el navegador: arena, agua, fuego, pólvora, ácido, plantas y lava que reaccionan entre sí con reglas locales.">
+<style>
+:root{
+  --bg:#211b14;
+  --panel:#2c241b;
+  --line:#4a3d2e;
+  --fg:#efe4d0;
+  --muted:#b3a38a;
+  --accent:#e6b65e;
+  --void:#15110c;
+  --display:ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;
+  --body:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg)}
+body{font-family:var(--body);font-size:15px;line-height:1.4}
+.app{
+  min-height:100vh;min-height:100dvh;
+  display:flex;flex-direction:column;align-items:center;gap:10px;
+  padding:10px max(12px,env(safe-area-inset-right,0px)) max(10px,env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px));
+}
+header{width:100%;max-width:1180px;display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+h1{font-family:var(--display);font-weight:700;font-size:20px;letter-spacing:.03em;margin:0;color:var(--accent);white-space:nowrap}
+.hud{font-family:var(--display);font-size:12px;color:var(--muted);letter-spacing:.05em;white-space:nowrap}
+.hud b{color:var(--fg);font-weight:400}
+.stage{position:relative;flex:none;background:var(--void);box-shadow:0 0 0 2px var(--line);border-radius:2px}
+canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;cursor:crosshair}
+.ring{position:absolute;pointer-events:none;border:1px solid rgba(239,228,208,.75);border-radius:50%;display:none;box-shadow:0 0 0 1px rgba(0,0,0,.45)}
+.bar{width:100%;max-width:1180px;display:grid;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px}
+.row{display:flex;gap:6px;align-items:center}
+.mats{overflow-x:auto;scrollbar-width:thin;padding-bottom:2px}
+.mat{flex:none;display:flex;align-items:center;gap:7px;padding:6px 9px;border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:4px;font:inherit;font-size:14px;cursor:pointer;white-space:nowrap}
+.mat:hover{border-color:var(--muted)}
+.mat[aria-pressed="true"]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent)}
+.sw{width:14px;height:14px;border-radius:2px;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.35)}
+.mat kbd{font-family:var(--display);font-size:10px;color:var(--muted)}
+.tools{flex-wrap:wrap;justify-content:space-between}
+.group{display:flex;gap:6px;align-items:center}
+.tag{font-family:var(--display);font-size:10px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;margin-right:2px}
+.size,.btn{padding:6px 12px;border:1px solid var(--line);background:var(--void);color:var(--fg);border-radius:4px;font:inherit;font-size:14px;cursor:pointer}
+.size{background:transparent}
+.size[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.btn:hover,.size:hover{border-color:var(--muted)}
+.mat:focus-visible,.btn:focus-visible,.size:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.help{display:none;color:var(--muted);font-size:13px}
+@media (min-width:900px){.help{display:block}.mats{flex-wrap:wrap;overflow:visible}}
+@media (max-width:700px){.bar{margin-top:auto}}
+@media (max-width:520px){h1{font-size:17px}.hud{font-size:11px}.tag{display:none}.size,.btn{padding:7px 10px}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header id="head">
+    <h1>Caja de Arena</h1>
+    <div class="hud"><b id="count">0</b> granos · <span id="state">en marcha</span></div>
+  </header>
+  <div class="stage" id="stage">
+    <canvas id="c" width="384" height="256" aria-label="Simulación de partículas"></canvas>
+    <div class="ring" id="ring"></div>
+  </div>
+  <section class="bar" id="bar" aria-label="Controles">
+    <div class="row mats" id="mats"></div>
+    <div class="row tools">
+      <div class="group"><span class="tag">Pincel</span>
+        <button class="size" data-r="1" aria-pressed="false">Fino</button>
+        <button class="size" data-r="4" aria-pressed="true">Medio</button>
+        <button class="size" data-r="9" aria-pressed="false">Grueso</button>
+      </div>
+      <div class="group">
+        <button class="btn" id="speed" title="Velocidad de la simulación">×1</button>
+        <button class="btn" id="pause">Pausa</button>
+        <button class="btn" id="clear">Vaciar</button>
+        <button class="btn" id="scene">Escena</button>
+      </div>
+    </div>
+    <div class="help">Teclas 1–0 eligen material · Espacio pausa · [ y ] cambian el pincel. Prueba fuego en la torre de madera, lava sobre el estanque y ácido sobre la montaña de arena.</div>
+  </section>
+</div>
+
+<script>
+(()=>{
+const W=384,H=256,N=W*H;
+const E=0,WALL=1,SAND=2,WATER=3,WOOD=4,FIRE=5,SMOKE=6,STEAM=7,ACID=8,POWDER=9,PLANT=10,LAVA=11,STONE=12;
+//             E  WALL SAND WATER WOOD FIRE SMOKE STEAM ACID POWD PLANT LAVA STONE
+const DENS=   [1, 99,  6,   3,    99,  0,   0,    0,    3,   6,   99,   4,   7];
+const DISP=   [1, 0,   0,   1,    0,   1,   1,    1,    1,   0,   0,    1,   0];
+const FLAM=   [0, 0,   0,   0,    1,   0,   0,    0,    0,   0,   1,    0,   0];
+const DX=[0,1,0,-1],DY=[-1,0,1,0];
+
+const t=new Uint8Array(N),life=new Uint8Array(N),shade=new Uint8Array(N),stamp=new Uint8Array(N);
+let tick=1;
+const R=Math.random, ri=n=>(R()*n)|0;
+
+function initLife(ty){
+  if(ty===FIRE)return 20+ri(40);
+  if(ty===SMOKE)return 40+ri(60);
+  if(ty===STEAM)return 80+ri(120);
+  return 0;
+}
+function setCell(i,ty){t[i]=ty;shade[i]=ri(256);life[i]=initLife(ty);stamp[i]=tick;}
+function ignite(i){ // la madera arde mucho más tiempo que una llama suelta
+  const wasWood=t[i]===WOOD;
+  setCell(i,FIRE);
+  if(wasWood)life[i]=110+ri(120);
+}
+function swap(i,j){
+  let a=t[i];t[i]=t[j];t[j]=a;
+  a=life[i];life[i]=life[j];life[j]=a;
+  a=shade[i];shade[i]=shade[j];shade[j]=a;
+  stamp[i]=tick;stamp[j]=tick;
+}
+function canMove(ty,j){const o=t[j];return DISP[o]===1&&DENS[o]<DENS[ty];}
+
+function stepPowder(x,y,i,ty){
+  if(y+1>=H)return;
+  const d=i+W;
+  if(canMove(ty,d)){swap(i,d);return;}
+  const dir=R()<.5?-1:1;
+  for(let k=0;k<2;k++){
+    const dx=k?-dir:dir,nx=x+dx;
+    if(nx<0||nx>=W)continue;
+    if(canMove(ty,d+dx)){swap(i,d+dx);return;}
+  }
+}
+function stepLiquid(x,y,i,ty,spread){
+  if(y+1<H){
+    const d=i+W;
+    if(canMove(ty,d)){swap(i,d);return;}
+    const dir=R()<.5?-1:1;
+    for(let k=0;k<2;k++){
+      const dx=k?-dir:dir,nx=x+dx;
+      if(nx<0||nx>=W)continue;
+      if(canMove(ty,d+dx)){swap(i,d+dx);return;}
+    }
+  }
+  const dir=R()<.5?-1:1;
+  for(let k=0;k<2;k++){
+    const dx=k?-dir:dir;let cx=x,best=-1;
+    for(let s=0;s<spread;s++){
+      cx+=dx;if(cx<0||cx>=W)break;
+      const j=y*W+cx;if(!canMove(ty,j))break;best=j;
+    }
+    if(best>=0){swap(i,best);return;}
+  }
+}
+function stepGas(x,y,i){
+  if(y>0){
+    const u=i-W;
+    if(t[u]===E||((t[u]===WATER||t[u]===ACID)&&R()<.5)){swap(i,u);return;}
+    const dir=R()<.5?-1:1;
+    for(let k=0;k<2;k++){
+      const dx=k?-dir:dir,nx=x+dx;
+      if(nx<0||nx>=W)continue;
+      if(t[u+dx]===E){swap(i,u+dx);return;}
+    }
+  }
+  const dx=R()<.5?-1:1,nx=x+dx;
+  if(nx>=0&&nx<W&&t[i+dx]===E&&R()<.5)swap(i,i+dx);
+}
+
+function explode(cx,cy){
+  const r=7+ri(5),r2=r*r,outer=Math.ceil(r*1.7),o2=outer*outer;
+  for(let dy=-outer;dy<=outer;dy++)for(let dx=-outer;dx<=outer;dx++){
+    const x=cx+dx,y=cy+dy;if(x<0||x>=W||y<0||y>=H)continue;
+    const d=dx*dx+dy*dy,j=y*W+x,o=t[j];
+    if(o===WALL)continue;
+    if(d<=r2){
+      if(o===WATER)setCell(j,STEAM);
+      else if(o===STONE){if(R()<.3)setCell(j,E);}
+      else setCell(j,R()<.75?FIRE:SMOKE);
+    }else if(d<=o2){
+      if(o===POWDER||FLAM[o])ignite(j);
+      else if(o===E&&R()<.25)setCell(j,SMOKE);
+    }
+  }
+}
+
+function update(){
+  tick=tick>=255?1:tick+1;
+  const ltr=tick&1;
+  for(let y=H-1;y>=0;y--){
+    const row=y*W;
+    for(let k=0;k<W;k++){
+      const x=ltr?k:W-1-k,i=row+x,ty=t[i];
+      if(ty===E||ty===WALL||ty===WOOD||stamp[i]===tick)continue;
+      stamp[i]=tick;
+      switch(ty){
+        case SAND:case STONE:case POWDER:stepPowder(x,y,i,ty);break;
+        case WATER:stepLiquid(x,y,i,ty,5);break;
+        case ACID:{
+          for(let d=0;d<4;d++){
+            const nx=x+DX[d],ny=y+DY[d];if(nx<0||nx>=W||ny<0||ny>=H)continue;
+            const j=ny*W+nx,o=t[j];
+            if(o===E||o===ACID||o===WALL||o===SMOKE||o===STEAM||o===FIRE||o===WATER)continue;
+            if(R()<.08){
+              setCell(j,R()<.3?SMOKE:E);
+              if(R()<.35){setCell(i,E);break;}
+            }
+          }
+          if(t[i]===ACID)stepLiquid(x,y,i,ACID,4);
+          break;
+        }
+        case PLANT:{
+          if(R()<.15){
+            const d=ri(4),nx=x+DX[d],ny=y+DY[d];
+            if(nx>=0&&nx<W&&ny>=0&&ny<H){const j=ny*W+nx;if(t[j]===WATER&&R()<.12)setCell(j,PLANT);}
+          }
+          break;
+        }
+        case FIRE:{
+          let gone=false;
+          for(let d=0;d<4;d++){
+            const nx=x+DX[d],ny=y+DY[d];if(nx<0||nx>=W||ny<0||ny>=H)continue;
+            const j=ny*W+nx,o=t[j];
+            if(o===WOOD&&R()<.025)ignite(j);
+            else if(o===PLANT&&R()<.07)ignite(j);
+            else if(o===POWDER){explode(nx,ny);gone=true;break;}
+            else if(o===WATER){setCell(i,STEAM);if(R()<.35)setCell(j,STEAM);gone=true;break;}
+          }
+          if(gone)break;
+          const l=life[i];
+          if(l<=1){setCell(i,R()<.35?SMOKE:E);break;}
+          life[i]=l-1;
+          if(l>100){ // brasa: se queda quieta y lanza llamas hacia arriba
+            if(y>0&&t[i-W]===E&&R()<.35){setCell(i-W,FIRE);life[i-W]=10+ri(25);}
+          }else if(y>0&&R()<.65){
+            const dx=R()<.34?-1:R()<.5?1:0,nx=x+dx;
+            if(nx>=0&&nx<W&&t[i-W+dx]===E)swap(i,i-W+dx);
+          }
+          break;
+        }
+        case SMOKE:{
+          if(life[i]<=1){setCell(i,E);break;}
+          life[i]--;stepGas(x,y,i);break;
+        }
+        case STEAM:{
+          if(life[i]<=1||(y===0&&R()<.02)){setCell(i,R()<.3?WATER:E);break;}
+          life[i]--;stepGas(x,y,i);break;
+        }
+        case LAVA:{
+          let done=false;
+          for(let d=0;d<4;d++){
+            const nx=x+DX[d],ny=y+DY[d];if(nx<0||nx>=W||ny<0||ny>=H)continue;
+            const j=ny*W+nx,o=t[j];
+            if(o===WATER){setCell(i,STONE);setCell(j,STEAM);done=true;break;}
+            if(o===POWDER){explode(nx,ny);}
+            else if(FLAM[o]&&R()<.06)ignite(j);
+          }
+          if(done)break;
+          if(y>0&&t[i-W]===E&&R()<.004)setCell(i-W,FIRE);
+          if(R()<.35)stepLiquid(x,y,i,LAVA,3);
+          break;
+        }
+      }
+    }
+  }
+}
+
+// ---------- dibujo ----------
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const img=ctx.createImageData(W,H),px=new Uint32Array(img.data.buffer);
+const pack=(r,g,b)=>((255<<24)|(b<<16)|(g<<8)|r)>>>0;
+const clamp=v=>v<0?0:v>255?255:v|0;
+const BASE={[E]:[26,21,15],[WALL]:[104,98,92],[SAND]:[226,186,108],[WATER]:[52,116,214],[WOOD]:[122,78,42],
+  [SMOKE]:[78,72,70],[STEAM]:[196,206,218],[ACID]:[150,232,58],[POWDER]:[66,62,72],[PLANT]:[66,168,72],[LAVA]:[236,92,22],[STONE]:[70,64,74]};
+const VAR={[E]:0,[WALL]:10,[SAND]:18,[WATER]:10,[WOOD]:14,[SMOKE]:8,[STEAM]:8,[ACID]:14,[POWDER]:16,[PLANT]:22,[LAVA]:20,[STONE]:14};
+const LUT=new Uint32Array(13*16);
+for(const k in BASE){
+  const [r,g,b]=BASE[k],v=VAR[k];
+  for(let s=0;s<16;s++){const d=(s/15-.5)*2*v;LUT[k*16+s]=pack(clamp(r+d),clamp(g+d),clamp(b+d));}
+}
+function render(now){
+  const ph=now/180;
+  for(let i=0;i<N;i++){
+    const ty=t[i];
+    if(ty===FIRE){
+      const l=life[i],f=Math.min(1,l/45),fl=(shade[i]&63);
+      px[i]=pack(255,clamp(70+f*170+fl-30),clamp(f*f*90));
+    }else if(ty===LAVA){
+      const w=Math.sin(ph+(shade[i]/40))*25;
+      px[i]=pack(clamp(236+w*.4),clamp(92+w),22);
+    }else if(ty===SMOKE){
+      const a=life[i]/100;const s=LUT[SMOKE*16+(shade[i]>>4)];
+      px[i]=a>.35?s:LUT[E*16];
+    }else px[i]=LUT[ty*16+(shade[i]>>4)];
+  }
+  ctx.putImageData(img,0,0);
+}
+
+// ---------- escala y diseño ----------
+// Los píxeles del lienzo se muestran con escala entera cuando cabe, para que todos midan lo mismo.
+const app=document.getElementById('app'),head=document.getElementById('head'),bar=document.getElementById('bar');
+const stage=document.getElementById('stage'),ring=document.getElementById('ring');
+let cpc=2; // píxeles CSS por celda
+function fit(){
+  const dpr=window.devicePixelRatio||1,cs=getComputedStyle(app);
+  const padX=parseFloat(cs.paddingLeft)+parseFloat(cs.paddingRight),padY=parseFloat(cs.paddingTop)+parseFloat(cs.paddingBottom);
+  const availW=app.clientWidth-padX-4;
+  const availH=window.innerHeight-padY-head.offsetHeight-bar.offsetHeight-20-4;
+  let k=Math.min(availW*dpr/W,availH*dpr/H);
+  const ki=Math.floor(k);
+  if(ki>=2&&(dpr<2||(k-ki)/k<.15))k=ki; // con pantalla de baja densidad siempre entera; con alta densidad el desajuste no se ve
+  k=Math.max(k,1);
+  cpc=k/dpr;
+  cv.style.width=(W*cpc)+'px';cv.style.height=(H*cpc)+'px';
+  updateRing();
+}
+addEventListener('resize',fit);
+addEventListener('orientationchange',fit);
+
+// ---------- materiales e input ----------
+const MATS=[
+  {id:SAND,name:'Arena',key:'1'},{id:WATER,name:'Agua',key:'2'},{id:WALL,name:'Muro',key:'3'},
+  {id:WOOD,name:'Madera',key:'4'},{id:FIRE,name:'Fuego',key:'5'},{id:POWDER,name:'Pólvora',key:'6'},
+  {id:ACID,name:'Ácido',key:'7'},{id:PLANT,name:'Planta',key:'8'},{id:LAVA,name:'Lava',key:'9'},{id:E,name:'Borrar',key:'0'}];
+const SW={[FIRE]:'#ff9a2e',[E]:'#15110c'};
+let cur=SAND,brush=4,paused=false,speed=1;
+const matsEl=document.getElementById('mats');
+for(const m of MATS){
+  const b=document.createElement('button');b.className='mat';b.id='mat-'+m.key;
+  const c=SW[m.id]||'rgb('+BASE[m.id].join(',')+')';
+  b.innerHTML=`<span class="sw" style="background:${c}${m.id===E?';outline:1px dashed #6b5b47':''}"></span>${m.name}<kbd>${m.key}</kbd>`;
+  b.setAttribute('aria-pressed',m.id===cur);
+  b.onclick=()=>select(m.id);
+  matsEl.appendChild(b);m.el=b;
+}
+function select(id){cur=id;for(const m of MATS)m.el.setAttribute('aria-pressed',m.id===id);}
+const sizeBtns=[...document.querySelectorAll('.size')];
+sizeBtns.forEach(b=>b.onclick=()=>setBrush(+b.dataset.r));
+function setBrush(r){brush=r;sizeBtns.forEach(b=>b.setAttribute('aria-pressed',+b.dataset.r===r));updateRing();}
+
+const SOLID=new Set([WALL,WOOD,PLANT]);
+function paintAt(cx,cy){
+  const r=brush,r2=r*r+r;
+  for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+    if(dx*dx+dy*dy>r2)continue;
+    const x=cx+dx,y=cy+dy;if(x<0||x>=W||y<0||y>=H)continue;
+    const j=y*W+x,o=t[j];
+    if(cur===E){if(o!==E)setCell(j,E);continue;}
+    if(cur===FIRE){if(FLAM[o]){if(R()<.3)ignite(j);}else if(o===POWDER){if(R()<.3)explode(x,y);}else if(o===E&&R()<.4)setCell(j,FIRE);continue;}
+    if(SOLID.has(cur)){if(o===E||o===SMOKE||o===STEAM)setCell(j,cur);continue;}
+    if(o===E&&R()<(r<=1?.9:.3))setCell(j,cur);
+  }
+}
+let down=false,last=null,pos=null,hover=null;
+function cell(e){const r=cv.getBoundingClientRect();return{x:Math.floor((e.clientX-r.left)/r.width*W),y:Math.floor((e.clientY-r.top)/r.height*H)};}
+function updateRing(){
+  if(!hover){ring.style.display='none';return;}
+  const d=(2*brush+1)*cpc;
+  ring.style.display='block';
+  ring.style.width=ring.style.height=d+'px';
+  ring.style.left=((hover.x+.5)*cpc-d/2)+'px';
+  ring.style.top=((hover.y+.5)*cpc-d/2)+'px';
+}
+cv.addEventListener('pointerdown',e=>{down=true;pos=cell(e);hover=pos;last=null;try{cv.setPointerCapture(e.pointerId);}catch(_){}updateRing();e.preventDefault();});
+cv.addEventListener('pointermove',e=>{const c=cell(e);hover=c;if(down)pos=c;updateRing();});
+cv.addEventListener('pointerleave',()=>{if(!down){hover=null;updateRing();}});
+const up=e=>{down=false;last=null;if(e&&e.pointerType&&e.pointerType!=='mouse'){hover=null;updateRing();}};
+cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+function strokes(){
+  if(!down||!pos)return;
+  if(!last){paintAt(pos.x,pos.y);}
+  else{
+    const dx=pos.x-last.x,dy=pos.y-last.y,n=Math.max(1,Math.ceil(Math.hypot(dx,dy)/Math.max(1,brush*.7)));
+    for(let s=1;s<=n;s++)paintAt(Math.round(last.x+dx*s/n),Math.round(last.y+dy*s/n));
+  }
+  last={...pos};
+}
+
+// ---------- escena ----------
+function rect(x0,y0,w,h,ty){for(let y=y0;y<y0+h;y++)for(let x=x0;x<x0+w;x++)if(x>=0&&x<W&&y>=0&&y<H)setCell(y*W+x,ty);}
+function clearAll(){t.fill(0);life.fill(0);}
+function scene(){
+  clearAll();
+  rect(0,H-6,W,6,WALL);
+  // estanque con plantas
+  rect(120,H-68,6,62,WALL);rect(250,H-68,6,62,WALL);
+  rect(126,H-58,124,52,WATER);
+  for(const p of [142,166,200,226])rect(p,H-12,3,6,PLANT);
+  // montaña de arena
+  for(let x=6;x<112;x++){const h=Math.max(0,56-Math.abs(x-59)*.95)|0;rect(x,H-6-h,1,h,SAND);}
+  // repisa con lava
+  rect(22,84,72,5,WALL);rect(22,72,5,12,WALL);rect(89,72,5,12,WALL);rect(27,76,62,8,LAVA);
+  // vaso de ácido
+  rect(160,48,5,26,WALL);rect(200,48,5,26,WALL);rect(160,74,45,5,WALL);rect(165,58,35,16,ACID);
+  // torre de madera con pólvora dentro
+  rect(286,H-102,6,96,WOOD);rect(358,H-102,6,96,WOOD);
+  rect(286,H-102,78,6,WOOD);rect(286,H-58,78,5,WOOD);
+  rect(306,H-144,42,42,WOOD);rect(316,H-134,22,22,E);
+  rect(292,H-22,66,16,POWDER);
+}
+
+// ---------- controles ----------
+const pauseBtn=document.getElementById('pause'),stateEl=document.getElementById('state'),speedBtn=document.getElementById('speed');
+function setPaused(p){paused=p;pauseBtn.textContent=p?'Reanudar':'Pausa';stateEl.textContent=p?'en pausa':'en marcha';}
+pauseBtn.onclick=()=>setPaused(!paused);
+const SPEEDS=[1,2,.5];
+speedBtn.onclick=()=>{speed=SPEEDS[(SPEEDS.indexOf(speed)+1)%SPEEDS.length];speedBtn.textContent='×'+speed;};
+document.getElementById('clear').onclick=()=>clearAll();
+document.getElementById('scene').onclick=()=>scene();
+addEventListener('keydown',e=>{
+  if(e.target.closest&&e.target.closest('input,textarea'))return;
+  const m=MATS.find(m=>m.key===e.key);if(m){select(m.id);return;}
+  if(e.code==='Space'){e.preventDefault();setPaused(!paused);}
+  if(e.key==='['){setBrush(brush>4?4:1);}
+  if(e.key===']'){setBrush(brush<4?4:9);}
+});
+
+// ---------- bucle: la simulación avanza a pasos fijos de 1/60 s, sea cual sea la frecuencia de la pantalla ----------
+const STEP=1000/60,countEl=document.getElementById('count');
+let prev=0,accSim=0,accIn=0,frame=0;
+function loop(now){
+  const dt=Math.min(100,now-prev);prev=now;
+  accIn+=dt;accSim+=dt*speed;
+  let n=0;
+  while(accIn>=STEP&&n<6){strokes();accIn-=STEP;n++;}
+  if(n===6)accIn=0;
+  n=0;
+  while(accSim>=STEP&&n<8){if(!paused)update();accSim-=STEP;n++;}
+  if(n===8)accSim=0;
+  render(now);
+  if(++frame%20===0){let c=0;for(let i=0;i<N;i++)if(t[i]!==E&&t[i]!==WALL)c++;countEl.textContent=c.toLocaleString('es-ES');}
+  requestAnimationFrame(loop);
+}
+fit();scene();
+requestAnimationFrame(now=>{prev=now;loop(now);});
+})();
+</script>
+</body>
+</html>
